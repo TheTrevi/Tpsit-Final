@@ -1,2 +1,5 @@
 .git-cache
 zig-out
+roadMap
+.zig-cache
+.gitignore
