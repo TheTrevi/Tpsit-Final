@@ -40,6 +40,10 @@
             .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#e072ff119be71727ec4e1b0cb6d8f892b32ff440",
             .hash = "raylib_zig-5.6.0-dev-KE8REGgxBQDoHuPWlO7RnY7M1jFlWV4kP1QY7r52GoP-",
         },
+        .nexlog = .{
+            .url = "git+https://github.com/chrischtel/nexlog/#d80943f427fe5ff6b48581526c9364e8f5d43fa5",
+            .hash = "nexlog-0.4.0-zfPDxFY7AQAduAGU_6zGS4IiTqJtjphYe4OC0PsHW8SL",
+        },
     },
     .paths = .{
         "build.zig",
