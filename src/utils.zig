@@ -15,17 +15,62 @@ pub fn ask_user(input: *[]u8, alloc: Allocator) void {
     if (value) |val| input.* = val;
 }
 
-pub const domanda = struct { domanda: []const u8, risposte: []const []const u8 };
+pub const domanda = struct { domanda: [:0]const u8, risposte: []const [:0]const u8 };
 
 pub const Config = struct {
     id: []const u8,
     domande: []const domanda,
 };
 
+pub const State = enum {
+    idle,
+    waiting_user_input,
+    user_error,
+    waiting_question_response,
+    ready_to_send,
+    disconnecting,
+    notification,
+    invalidPacket,
+    processing,
+    ack,
+    errorRead,
+    changeQuiz,
+};
+
 pub const SharedState = struct {
     mutex: std.Thread.Mutex = .{},
-    response_buffer: [256]u8 = undefined,
-    response_len: usize = 0,
-    has_response: bool = false,
+    client_signal: std.Thread.Condition = .{},
+    ui_signal: std.Thread.Condition = .{},
+
+    // Connection state
     connected: bool = false,
+    state: State = .idle,
+
+    server_message: []u8 = &[_]u8{},
+    user_input: []u8 = &[_]u8{},
+    question: ?domanda = null,
+
+    allocator: ?std.mem.Allocator = null,
+
+    pub fn setServerMessage(self: *SharedState, alloc: std.mem.Allocator, message: []const u8) !void {
+        if (self.server_message.len > 0) alloc.free(self.server_message);
+        self.server_message = try alloc.dupe(u8, message);
+    }
+
+    pub fn setUserInput(self: *SharedState, alloc: std.mem.Allocator, input: []const u8) !void {
+        if (self.user_input.len > 0) alloc.free(self.user_input);
+        self.user_input = try alloc.dupe(u8, input);
+    }
+
+    pub fn deinit(self: *SharedState, alloc: std.mem.Allocator) void {
+        if (self.server_message.len > 0) alloc.free(self.server_message);
+        if (self.user_input.len > 0) alloc.free(self.user_input);
+        if (self.question) |q| {
+            alloc.free(q.domanda);
+            for (q.risposte) |risposta| {
+                alloc.free(risposta);
+            }
+            alloc.free(q.risposte);
+        }
+    }
 };
