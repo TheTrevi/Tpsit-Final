@@ -17,6 +17,12 @@ pub fn ask_user(input: *[]u8, alloc: Allocator) void {
 
 pub const domanda = struct { domanda: [:0]const u8, risposte: []const [:0]const u8 };
 
+pub const QuizQuestion = struct {
+    question: [:0]const u8,
+    answers: [4][:0]const u8,
+    correct_index: usize,
+};
+
 pub const Config = struct {
     id: []const u8,
     domande: []const domanda,

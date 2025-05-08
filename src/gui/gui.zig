@@ -31,6 +31,8 @@ pub const TextBox = struct {
         const mouse_over = self.isHovered();
         const outline_color = if (self.active) self.active_color else if (mouse_over) self.hover_color else self.normal_color;
 
+        self.update();
+
         rl.drawRectangleRounded(.{
             .x = self.position.x,
             .y = self.position.y,

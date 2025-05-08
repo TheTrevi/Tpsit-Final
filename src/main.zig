@@ -56,6 +56,26 @@ const possibleStates = enum {
     resultScren,
 };
 
+var createInputs: [10]TextBox = undefined;
+var createInputsLen: usize = 0;
+var createButtons: [10]Button = undefined;
+var createButtonsLen: usize = 0;
+
+var currentQuestion: usize = 0;
+var totalQuestions: usize = 0;
+var questionOptions: usize = 0;
+var currentOption: usize = 0;
+var questionTexts: std.ArrayList([:0]u8) = undefined;
+var optionTexts: std.ArrayList(std.ArrayList([:0]u8)) = undefined;
+var creationStep: enum {
+    id,
+    num_questions,
+    question_text,
+    num_options,
+    option_text,
+    complete,
+} = .id;
+
 fn startClientThread() void {
     clientInstance.startStream() catch {};
 }
@@ -77,6 +97,9 @@ fn openPopup(string: []u8, input: bool) void {
     popupText = alloc.dupeZ(u8, string) catch emptyMessage;
     // Show popup for user input
     showPopup = true;
+    for (&buttons) |*b| {
+        b.enabled = false;
+    }
     if (input) {
         popupInput.visible = true;
         popupInput.buffer = [_]u8{0} ** 256;
@@ -113,6 +136,15 @@ fn updateLayout() void {
 
     popupButton.position = Vec2{ .x = (screen_width - 150) / 2, .y = popupInput.position.y + 70 };
     popupButton.size = Vec2{ .x = 150, .y = 40 };
+
+    for (createInputs[0..createInputsLen]) |*input| {
+        input.update();
+    }
+
+    for (createButtons[0..createButtonsLen]) |*button| {
+        button.position.y = button.position.y; // Keep y position
+        button.position.x = (screen_width - button.size.x) / 2; // Center horizontally
+    }
 }
 
 fn initiatePopup() void {
@@ -194,6 +226,9 @@ fn initiateHomeLayout() void {
         .onClick = struct {
             pub fn click(ctx: *anyopaque) void {
                 _ = ctx;
+                currentState = .createScren;
+                initiateCreationLayout();
+                updateLayout();
             }
         }.click,
     };
@@ -326,14 +361,493 @@ fn initiateResultLayout() void {
 }
 
 fn initiateCreationLayout() void {
-    return;
+    const screen_width = @as(f32, @floatFromInt(rl.getScreenWidth()));
+    const screen_height = @as(f32, @floatFromInt(rl.getScreenHeight()));
+    const scale_x = screen_width / base_width;
+    const scale_y = screen_height / base_height;
+
+    const input_width = 600 * scale_x;
+    const input_height = 50 * scale_y;
+    const button_width = 250 * scale_x;
+    const button_height = 60 * scale_y;
+
+    // Create an input field for quiz ID or question text
+    createInputs[0] = TextBox{
+        .position = Vec2{ .x = (screen_width - input_width) / 2, .y = 300 },
+        .size = Vec2{ .x = input_width, .y = input_height },
+        .active_color = Colors.text,
+        .hover_color = Colors.button_hover,
+        .normal_color = Colors.button,
+        .text_color = Colors.text,
+    };
+    createInputsLen = 1;
+
+    // Submit button
+    createButtons[0] = Button{
+        .text = "Submit",
+        .position = Vec2{ .x = (screen_width - button_width) / 2, .y = 400 },
+        .size = Vec2{ .x = button_width, .y = button_height },
+        .background_color = Colors.button,
+        .hover_color = Colors.button_hover,
+        .disabled_color = Colors.button_disabled,
+        .text_color = Colors.text,
+        .enabled = true,
+        .onClick = struct {
+            pub fn click(ctx: *anyopaque) void {
+                _ = ctx;
+                handleCreateSubmit();
+            }
+        }.click,
+    };
+
+    // Back to main menu button
+    createButtons[1] = Button{
+        .text = "Cancel",
+        .position = Vec2{ .x = (screen_width - button_width) / 2, .y = 480 },
+        .size = Vec2{ .x = button_width, .y = button_height },
+        .background_color = Colors.button,
+        .hover_color = Colors.button_hover,
+        .disabled_color = Colors.button_disabled,
+        .text_color = Colors.text,
+        .enabled = true,
+        .onClick = struct {
+            pub fn click(ctx: *anyopaque) void {
+                _ = ctx;
+                cancelCreateQuiz();
+            }
+        }.click,
+    };
+    createButtonsLen = 2;
+
+    // Initialize arraylists for storing question and option data
+    questionTexts = std.ArrayList([:0]u8).init(alloc);
+    optionTexts = std.ArrayList(std.ArrayList([:0]u8)).init(alloc);
+
+    // Reset creation step
+    creationStep = .id;
+}
+
+fn handleCreateSubmit() void {
+    switch (creationStep) {
+        .id => {
+            // Check if quiz ID is not empty
+            if (createInputs[0].buffer_len == 0) {
+                displayError(@constCast("Quiz ID cannot be empty"));
+                return;
+            }
+
+            // Send quiz creation request to the server with the quiz ID
+            clientInstance.sendMessage('c', createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
+                displayError(@constCast("Failed to send message"));
+                return;
+            };
+
+            // Prepare for next step: number of questions
+            clearCreateInput();
+            creationStep = .num_questions;
+        },
+        .num_questions => {
+            // Parse number of questions
+            const num_str = createInputs[0].buffer[0..createInputs[0].buffer_len];
+            totalQuestions = std.fmt.parseInt(usize, num_str, 10) catch {
+                displayError(@constCast("Invalid number format"));
+                return;
+            };
+
+            if (totalQuestions == 0 or totalQuestions > 100) {
+                displayError(@constCast("Please enter a number between 1 and 100"));
+                return;
+            }
+
+            // Prepare for first question
+            currentQuestion = 0;
+            clearCreateInput();
+            creationStep = .question_text;
+            updatePromptText();
+        },
+        .question_text => {
+            // Store the question text
+            if (createInputs[0].buffer_len == 0) {
+                displayError(@constCast("Question text cannot be empty"));
+                return;
+            }
+
+            const questionText = alloc.dupeZ(u8, createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
+                displayError(@constCast("Memory allocation failed"));
+                return;
+            };
+            questionTexts.append(questionText) catch {
+                alloc.free(questionText);
+                displayError(@constCast("Memory allocation failed"));
+                return;
+            };
+
+            // Move to number of options
+            clearCreateInput();
+            creationStep = .num_options;
+            updatePromptText();
+        },
+        .num_options => {
+            // Parse number of options
+            const num_str = createInputs[0].buffer[0..createInputs[0].buffer_len];
+            questionOptions = std.fmt.parseInt(usize, num_str, 10) catch {
+                displayError(@constCast("Invalid number format"));
+                return;
+            };
+
+            if (questionOptions < 2 or questionOptions > 10) {
+                displayError(@constCast("Please enter a number between 2 and 10"));
+                return;
+            }
+
+            // Initialize option list for this question
+            const options = std.ArrayList([:0]u8).init(alloc);
+            optionTexts.append(options) catch {
+                displayError(@constCast("Memory allocation failed"));
+                return;
+            };
+
+            // Prepare for option input
+            currentOption = 0;
+            clearCreateInput();
+            creationStep = .option_text;
+            updatePromptText();
+        },
+        .option_text => {
+            // Store the option text
+            if (createInputs[0].buffer_len == 0) {
+                displayError(@constCast("Option text cannot be empty"));
+                return;
+            }
+
+            const optionText = alloc.dupeZ(u8, createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
+                displayError(@constCast("Memory allocation failed"));
+                return;
+            };
+
+            optionTexts.items[currentQuestion].append(optionText) catch {
+                alloc.free(optionText);
+                displayError(@constCast("Memory allocation failed"));
+                return;
+            };
+
+            currentOption += 1;
+            clearCreateInput();
+
+            // Check if all options for this question are collected
+            if (currentOption >= questionOptions) {
+                // Move to next question or complete
+                currentQuestion += 1;
+
+                if (currentQuestion >= totalQuestions) {
+                    // All questions collected, send to server
+                    submitQuizToServer();
+                } else {
+                    // Next question
+                    creationStep = .question_text;
+                }
+            }
+
+            updatePromptText();
+        },
+        .complete => {
+            // Quiz creation complete
+            resetQuizCreation();
+            currentState = .homeScreen;
+        },
+    }
+}
+
+fn updatePromptText() void {
+    switch (creationStep) {
+        .id => {
+            if (notificationText.len > 1) alloc.free(notificationText);
+            notificationText = alloc.dupeZ(u8, "Enter Quiz ID") catch emptyMessage;
+        },
+        .num_questions => {
+            if (notificationText.len > 1) alloc.free(notificationText);
+            notificationText = alloc.dupeZ(u8, "How many questions would you like to add?") catch emptyMessage;
+        },
+        .question_text => {
+            if (notificationText.len > 1) alloc.free(notificationText);
+            const text: [:0]u8 = std.fmt.allocPrintZ(alloc, "Enter question {d}/{d}", .{ currentQuestion + 1, totalQuestions }) catch @constCast("Enter question");
+            notificationText = text;
+        },
+        .num_options => {
+            if (notificationText.len > 1) alloc.free(notificationText);
+            notificationText = alloc.dupeZ(u8, "How many options for this question?") catch emptyMessage;
+        },
+        .option_text => {
+            if (notificationText.len > 1) alloc.free(notificationText);
+            const text = std.fmt.allocPrintZ(alloc, "Enter option {d}/{d}", .{ currentOption + 1, questionOptions }) catch @constCast("Enter option");
+            notificationText = text;
+        },
+        .complete => {
+            if (notificationText.len > 1) alloc.free(notificationText);
+            notificationText = alloc.dupeZ(u8, "Quiz creation complete!") catch emptyMessage;
+        },
+    }
+}
+
+// Clear the input field
+fn clearCreateInput() void {
+    createInputs[0].buffer = [_]u8{0} ** 256;
+    createInputs[0].buffer_len = 0;
+}
+
+fn cancelCreateQuiz() void {
+    resetQuizCreation();
+    currentState = .homeScreen;
+}
+
+// Reset quiz creation state
+fn resetQuizCreation() void {
+    // Free allocated memory
+    for (questionTexts.items) |text| {
+        alloc.free(text);
+    }
+    questionTexts.clearAndFree();
+
+    for (optionTexts.items) |options| {
+        for (options.items) |option| {
+            alloc.free(option);
+        }
+        options.deinit();
+    }
+    optionTexts.clearAndFree();
+
+    // Reset counters
+    currentQuestion = 0;
+    totalQuestions = 0;
+    questionOptions = 0;
+    currentOption = 0;
+    creationStep = .id;
+
+    // Clear input
+    clearCreateInput();
+}
+
+// Submit the completed quiz to the server
+fn submitQuizToServer() void {
+    creationStep = .complete;
+
+    // In a real implementation, this would send all the quiz data to the server
+    // But our server already handles this interactively, so we just mark as complete
+
+    updatePromptText();
+}
+
+// Variables to store quiz creation state
+var currentQuizQuestions: std.ArrayList(util.QuizQuestion) = undefined;
+var currentQuizTitle: []u8 = undefined;
+
+fn initializeQuizCreation() void {
+    // Initialize the array list for storing questions
+    currentQuizQuestions = std.ArrayList(util.QuizQuestion).init(alloc);
+    currentQuizTitle = alloc.alloc(u8, 0) catch "";
+
+    // Switch to creation screen state
+    currentState = .createScren;
+
+    // Initialize the layout for creation
+    initiateCreationLayout();
+    updateLayout();
+}
+
+fn submitNewQuestion() void {
+    // Validate inputs
+    if (inputs[1].buffer_len == 0) {
+        displayError(@constCast("Question cannot be empty"));
+        return;
+    }
+
+    // Check all answers have content
+    for (0..4) |i| {
+        if (inputs[2 + i].buffer_len == 0) {
+            displayError(@constCast("All answer options must be filled"));
+            return;
+        }
+    }
+
+    // Validate correct answer input (must be 1-4)
+    if (inputs[6].buffer_len == 0 or inputs[6].buffer[0] < '1' or inputs[6].buffer[0] > '4') {
+        displayError(@constCast("Correct answer must be 1-4"));
+        return;
+    }
+
+    // Store quiz title if first question
+    if (currentQuizTitle.len == 0 and inputs[0].buffer_len > 0) {
+        currentQuizTitle = alloc.dupeZ(u8, inputs[0].buffer[0..inputs[0].buffer_len]) catch {
+            displayError(@constCast("Memory allocation error"));
+            return;
+        };
+    }
+
+    // Create and store the new question
+    var answers: [4][:0]const u8 = undefined;
+    for (0..4) |i| {
+        answers[i] = alloc.dupeZ(u8, inputs[2 + i].buffer[0..inputs[2 + i].buffer_len]) catch {
+            displayError(@constCast("Memory allocation error"));
+            return;
+        };
+    }
+
+    const correct_index = @as(usize, @intCast(inputs[6].buffer[0] - '1'));
+
+    const question = util.QuizQuestion{
+        .question = alloc.dupeZ(u8, inputs[1].buffer[0..inputs[1].buffer_len]) catch {
+            displayError(@constCast("Memory allocation error"));
+            return;
+        },
+        .answers = answers,
+        .correct_index = correct_index,
+    };
+
+    currentQuizQuestions.append(question) catch {
+        displayError(@constCast("Memory allocation error"));
+        return;
+    };
+
+    // Clear input fields except title
+    for (1..inputsLen) |i| {
+        inputs[i].buffer_len = 0;
+        inputs[i].buffer[0] = 0;
+    }
+
+    // Show success notification
+    if (notificationText.len > 1) alloc.free(notificationText);
+    notificationText = alloc.dupeZ(u8, "Question added successfully") catch emptyMessage;
+}
+
+fn submitFullQuiz() void {
+    // Validate that we have at least one question
+    if (currentQuizQuestions.items.len == 0) {
+        displayError(@constCast("Quiz must have at least one question"));
+        return;
+    }
+
+    // Validate that we have a title
+    if (currentQuizTitle.len == 0) {
+        displayError(@constCast("Quiz must have a title"));
+        return;
+    }
+
+    // Format the quiz data to send to server
+    var quiz_data = std.ArrayList(u8).init(alloc);
+    defer quiz_data.deinit();
+
+    // Add title
+    quiz_data.appendSlice(currentQuizTitle) catch {
+        displayError(@constCast("Memory allocation error"));
+        return;
+    };
+    quiz_data.append('\n') catch return;
+
+    // Add question count
+    const question_count_str = std.fmt.allocPrint(alloc, "{d}\n", .{currentQuizQuestions.items.len}) catch {
+        displayError(@constCast("Memory allocation error"));
+        return;
+    };
+    defer alloc.free(question_count_str);
+    quiz_data.appendSlice(question_count_str) catch return;
+
+    // Add each question
+    for (currentQuizQuestions.items) |question| {
+        // Question text
+        quiz_data.appendSlice(question.question) catch return;
+        quiz_data.append('\n') catch return;
+
+        // Answer count
+        quiz_data.appendSlice("4\n") catch return;
+
+        // Each answer
+        for (question.answers) |answer| {
+            quiz_data.appendSlice(answer) catch return;
+            quiz_data.append('\n') catch return;
+        }
+
+        // Correct answer index
+        const correct_str = std.fmt.allocPrint(alloc, "{d}\n", .{question.correct_index}) catch {
+            displayError(@constCast("Memory allocation error"));
+            return;
+        };
+        defer alloc.free(correct_str);
+        quiz_data.appendSlice(correct_str) catch return;
+    }
+
+    // Send the quiz data to server
+    clientInstance.sendMessage('c', quiz_data.items) catch {
+        displayError(@constCast("Failed to send quiz to server"));
+        return;
+    };
+
+    // Clean up
+    for (currentQuizQuestions.items) |question| {
+        alloc.free(question.question);
+        for (question.answers) |answer| {
+            alloc.free(answer);
+        }
+    }
+    currentQuizQuestions.deinit();
+    alloc.free(currentQuizTitle);
+
+    // Return to home screen
+    currentState = .homeScreen;
+    initiateHomeLayout();
+    updateLayout();
+
+    // Show success notification
+    if (notificationText.len > 1) alloc.free(notificationText);
+    notificationText = alloc.dupeZ(u8, "Quiz saved successfully") catch emptyMessage;
+}
+
+fn drawCreateScreen() void {
+    const screen_width = rl.getScreenWidth();
+    const screen_height = rl.getScreenHeight();
+
+    rl.clearBackground(Colors.background);
+
+    rl.drawText(
+        "Create Quiz",
+        @divTrunc(screen_width - rl.measureText("Create Quiz", 80), 2),
+        50,
+        80,
+        Colors.text,
+    );
+
+    // Draw notification/prompt text
+    if (notificationText.len > 1) {
+        rl.drawText(notificationText, @divTrunc(screen_width - rl.measureText(notificationText, 30), 2), 200, 30, Colors.text);
+    }
+
+    // Draw input field and buttons
+    for (createInputs[0..createInputsLen]) |*input| {
+        input.draw();
+    }
+
+    for (createButtons[0..createButtonsLen]) |*button| {
+        button.draw();
+    }
+
+    // Connection status
+    shared.mutex.lock();
+    const connected = shared.connected;
+    shared.mutex.unlock();
+    const conn_text = if (connected) "Connected" else "Disconnected";
+    const conn_color = if (connected) Colors.green_pastel else Colors.red_pastel;
+
+    rl.drawText(
+        conn_text,
+        screen_width - rl.measureText(conn_text, 25) - 100,
+        screen_height - 50,
+        30,
+        conn_color,
+    );
 }
 
 fn handlePopupSubmission() void {
     showPopup = false;
-    for (&buttons) |*b| {
-        b.enabled = true;
-    }
+
     // Check state to determine what to do with the input
     shared.mutex.lock();
     const state = shared.state;
@@ -351,6 +865,9 @@ fn handlePopupSubmission() void {
         clientInstance.sendMessage('t', popupInput.buffer[0..popupInput.buffer_len]) catch {
             displayError(@constCast("Couldn't send message"));
         };
+    }
+    for (&buttons) |*b| {
+        b.enabled = true;
     }
 }
 
@@ -516,10 +1033,6 @@ fn drawResultScreen() void {
     homeButton.draw();
 }
 
-fn drawCreateScreen() void {
-    return;
-}
-
 fn drawPopup() void {
     const screen_width = rl.getScreenWidth();
     const screen_height = rl.getScreenHeight();
@@ -562,6 +1075,13 @@ fn checkClientUpdates() void {
     // Check current state
     switch (shared.state) {
         .waiting_user_input => {
+            if (currentState == .createScren) {
+                if (notificationText.len > 1) alloc.free(notificationText);
+                notificationText = alloc.dupeZ(u8, shared.server_message) catch emptyMessage;
+                shared.state = .idle;
+                return;
+            }
+
             // Copy message to display
             openPopup(shared.server_message, true);
             // Disable main buttons while popup is active
@@ -572,6 +1092,7 @@ fn checkClientUpdates() void {
         .user_error => {
             // Copy error message to display
             displayError(shared.server_message);
+            shared.state = .idle;
         },
         .ack => {
             openPopup(@constCast("Iniziare Quiz"), false);
@@ -663,7 +1184,8 @@ pub fn main() !void {
 
         // Handle error popup timer
         if (errorPopupTimer > 0) {
-            errorPopupTimer -= 1;
+            std.debug.print("ok: {d}", .{errorPopupTimer});
+            errorPopupTimer -= 2;
             if (errorPopupTimer == 0) {
                 showError = false;
             }
