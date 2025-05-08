@@ -217,7 +217,12 @@ pub const serverClass = struct {
             try connWriter.writeAll(promptMsg);
 
             // Get question text
-            const questionText = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096) orelse return;
+            const tempText = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096) orelse return;
+
+            const questionText = try std.fmt.allocPrintZ(alloc, "{s}", .{tempText});
+
+            alloc.free(tempText);
+        
 
             // Now get options
             try connWriter.writeAll("/1How many options for this question?\n");
@@ -242,7 +247,7 @@ pub const serverClass = struct {
             }
 
             // Allocate options array
-            var options = try alloc.alloc([]u8, numOptions);
+            var options = try alloc.alloc([:0]const u8, numOptions);
 
             var j: usize = 0;
             var valid = true;
@@ -251,10 +256,12 @@ pub const serverClass = struct {
                 defer alloc.free(optionPrompt);
                 try connWriter.writeAll(optionPrompt);
 
-                options[j] = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096) orelse {
+                const temp = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096) orelse {
                     valid = false;
                     break;
                 };
+
+                options[j] = try std.fmt.allocPrintZ(alloc, "{s}", .{temp});
             }
 
             if (!valid) {
