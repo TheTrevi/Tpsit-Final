@@ -128,9 +128,14 @@ pub const serverClass = struct {
         var correctAnswers: usize = 0;
         const totalQuestions = quizData.domande.len;
 
-        const startMsg = try std.fmt.allocPrint(alloc, "/T{d}", .{totalQuestions});
-        defer alloc.free(startMsg);
-        try connWriter.writeAll(startMsg);
+        //const startMsg = try std.fmt.allocPrint(alloc, "/T{d}", .{totalQuestions});
+        //defer alloc.free(startMsg);
+        //try connWriter.writeAll(startMsg);
+
+        //self.logger.debug("waiting ack, {s}", .{startMsg}, @src());
+        //_ = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024);
+
+        //self.logger.debug("ack OK", .{}, @src());
 
         for (quizData.domande, 0..) |structDomanda, questionIdx| {
             string.clearRetainingCapacity();
@@ -153,11 +158,11 @@ pub const serverClass = struct {
             }
 
             // Notify progress
-            if (questionIdx < totalQuestions - 1) {
-                const progressMsg = try std.fmt.allocPrint(alloc, "/nQuestion {d} of {d} completed\n", .{ questionIdx + 1, totalQuestions });
-                defer alloc.free(progressMsg);
-                try connWriter.writeAll(progressMsg);
-            }
+            //if (questionIdx < totalQuestions - 1) {
+            //    const progressMsg = try std.fmt.allocPrint(alloc, "/nQuestion {d} of {d} completed\n", .{ questionIdx + 1, totalQuestions });
+            //    defer alloc.free(progressMsg);
+            //    try connWriter.writeAll(progressMsg);
+            //}
         }
 
         // Send test completion notification
@@ -171,10 +176,9 @@ pub const serverClass = struct {
     }
 
     fn handleCreateQuiz(self: Self, payload: []const u8, alloc: Allocator, connReader: net.Stream.Reader, connWriter: net.Stream.Writer) !void {
-        _ = self;
         _ = payload;
         try connWriter.writeAll("/1Enter quiz ID:\n");
-
+        self.logger.debug("quiz requested", .{}, @src());
         // Get quiz ID
         const quizId = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse return;
         defer alloc.free(quizId);
@@ -219,10 +223,11 @@ pub const serverClass = struct {
             // Get question text
             const tempText = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 4096) orelse return;
 
+            self.logger.debug("domanda: {s}", .{tempText}, @src());
+
             const questionText = try std.fmt.allocPrintZ(alloc, "{s}", .{tempText});
 
             alloc.free(tempText);
-        
 
             // Now get options
             try connWriter.writeAll("/1How many options for this question?\n");
@@ -288,8 +293,11 @@ pub const serverClass = struct {
 
         var outFile = try std.fs.cwd().createFile(fileName, .{});
         defer outFile.close();
+        self.logger.debug("End questions, {s}", .{fileName}, @src());
 
         try std.json.stringify(newQuiz, .{}, outFile.writer());
+
+        self.logger.debug("End questions, {s} BANANNA", .{fileName}, @src());
 
         for (newQuiz.domande) |question| {
             for (question.risposte) |answer| {

@@ -48,6 +48,7 @@ var nextMessageId: bool = true;
 
 var domanda: util.domanda = undefined;
 var risultati: [:0]const u8 = undefined;
+var firstTime = true;
 
 const possibleStates = enum {
     homeScreen,
@@ -86,7 +87,11 @@ fn connectToServer() void {
     shared.mutex.unlock();
 
     if (!currently_connected) {
-        _ = std.Thread.spawn(.{}, startClientThread, .{}) catch {};
+        _ = std.Thread.spawn(.{}, startClientThread, .{}) catch |err| {
+            // Handle thread creation error
+            displayError(@constCast("Failed to start client thread"));
+            log.err("Failed to spawn client thread: {}", .{err}, @src());
+        };
     } else {
         clientInstance.closeConnection();
     }
@@ -425,9 +430,11 @@ fn initiateCreationLayout() void {
 
     // Reset creation step
     creationStep = .id;
+    firstTime = true;
 }
 
 fn handleCreateSubmit() void {
+    log.debug("state: {any}", .{creationStep}, @src());
     switch (creationStep) {
         .id => {
             // Check if quiz ID is not empty
@@ -436,15 +443,22 @@ fn handleCreateSubmit() void {
                 return;
             }
 
-            // Send quiz creation request to the server with the quiz ID
-            clientInstance.sendMessage('c', createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
-                displayError(@constCast("Failed to send message"));
-                return;
-            };
+            // Send quiz creation request to the server
+            // The 'c' command tells the server we want to create a quiz
+            if (firstTime) {
+                clientInstance.sendMessage('c', "") catch {
+                    displayError(@constCast("Failed to send message"));
+                    return;
+                };
+                firstTime = false;
+            } else {
+                shared.state = .ready_to_send;
+                shared.setUserInput(alloc, createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
+                    return;
+                };
 
-            // Prepare for next step: number of questions
-            clearCreateInput();
-            creationStep = .num_questions;
+                shared.client_signal.signal();
+            }
         },
         .num_questions => {
             // Parse number of questions
@@ -464,6 +478,9 @@ fn handleCreateSubmit() void {
             clearCreateInput();
             creationStep = .question_text;
             updatePromptText();
+
+            // Send the number of questions to the server
+            submitResponse(num_str);
         },
         .question_text => {
             // Store the question text
@@ -472,15 +489,10 @@ fn handleCreateSubmit() void {
                 return;
             }
 
-            const questionText = alloc.dupeZ(u8, createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
-                displayError(@constCast("Memory allocation failed"));
-                return;
-            };
-            questionTexts.append(questionText) catch {
-                alloc.free(questionText);
-                displayError(@constCast("Memory allocation failed"));
-                return;
-            };
+            const questionText = createInputs[0].buffer[0..createInputs[0].buffer_len];
+
+            // Send question text to server
+            submitResponse(questionText);
 
             // Move to number of options
             clearCreateInput();
@@ -500,12 +512,8 @@ fn handleCreateSubmit() void {
                 return;
             }
 
-            // Initialize option list for this question
-            const options = std.ArrayList([:0]u8).init(alloc);
-            optionTexts.append(options) catch {
-                displayError(@constCast("Memory allocation failed"));
-                return;
-            };
+            // Send number of options to server
+            submitResponse(num_str);
 
             // Prepare for option input
             currentOption = 0;
@@ -520,16 +528,10 @@ fn handleCreateSubmit() void {
                 return;
             }
 
-            const optionText = alloc.dupeZ(u8, createInputs[0].buffer[0..createInputs[0].buffer_len]) catch {
-                displayError(@constCast("Memory allocation failed"));
-                return;
-            };
+            const optionText = createInputs[0].buffer[0..createInputs[0].buffer_len];
 
-            optionTexts.items[currentQuestion].append(optionText) catch {
-                alloc.free(optionText);
-                displayError(@constCast("Memory allocation failed"));
-                return;
-            };
+            // Send option to server
+            submitResponse(optionText);
 
             currentOption += 1;
             clearCreateInput();
@@ -540,8 +542,12 @@ fn handleCreateSubmit() void {
                 currentQuestion += 1;
 
                 if (currentQuestion >= totalQuestions) {
-                    // All questions collected, send to server
-                    submitQuizToServer();
+                    // All questions collected, quiz creation is complete
+                    creationStep = .complete;
+                    updatePromptText();
+
+                    // Wait for server confirmation
+                    // We'll receive a notification from the server when done
                 } else {
                     // Next question
                     creationStep = .question_text;
@@ -629,12 +635,16 @@ fn resetQuizCreation() void {
 
 // Submit the completed quiz to the server
 fn submitQuizToServer() void {
+    // Mark that we're complete on UI side
     creationStep = .complete;
-
-    // In a real implementation, this would send all the quiz data to the server
-    // But our server already handles this interactively, so we just mark as complete
-
     updatePromptText();
+
+    // Do not send all quiz data at once - the server expects interactive communication
+    // Just send the initial command to start quiz creation process
+    clientInstance.sendMessage('c', "") catch {
+        displayError(@constCast("Failed to start quiz creation"));
+        return;
+    };
 }
 
 // Variables to store quiz creation state
@@ -874,12 +884,13 @@ fn handlePopupSubmission() void {
 fn submitResponse(response: []const u8) void {
     shared.mutex.lock();
     defer shared.mutex.unlock();
+    log.debug("state: {any}", .{shared.state}, @src());
     // Only process if we're in a state expecting user input
     if (shared.state == .waiting_user_input or
         shared.state == .waiting_question_response or
         shared.state == .user_error or
         shared.state == .ack or
-        shared.state == .changeQuiz)
+        shared.state == .changeQuiz or shared.state == .idle)
     {
         // Set the user input
         shared.setUserInput(alloc, response) catch {
@@ -1076,8 +1087,12 @@ fn checkClientUpdates() void {
     switch (shared.state) {
         .waiting_user_input => {
             if (currentState == .createScren) {
+                // Handle input request during quiz creation
                 if (notificationText.len > 1) alloc.free(notificationText);
                 notificationText = alloc.dupeZ(u8, shared.server_message) catch emptyMessage;
+
+                // For quiz creation, we don't want to use the popup for input
+                // Instead, we'll use the current input field
                 shared.state = .idle;
                 return;
             }
@@ -1104,9 +1119,18 @@ fn checkClientUpdates() void {
         },
         .notification => {
             // Just display the notification
-            // setDisplayMessage(shared.server_message);
             if (notificationText.len > 1) alloc.free(notificationText);
             notificationText = alloc.dupeZ(u8, shared.server_message) catch emptyMessage;
+
+            // Check if this is the quiz creation complete message
+            if (std.mem.indexOf(u8, shared.server_message, "Quiz created successfully") != null and currentState == .createScren) {
+                // Reset quiz creation state and go back to home screen
+                resetQuizCreation();
+                currentState = .homeScreen;
+                initiateHomeLayout();
+                updateLayout();
+            }
+
             // Reset state to idle after processing
             shared.state = .idle;
         },
@@ -1184,7 +1208,7 @@ pub fn main() !void {
 
         // Handle error popup timer
         if (errorPopupTimer > 0) {
-            std.debug.print("ok: {d}", .{errorPopupTimer});
+            // std.debug.print("ok: {d}", .{errorPopupTimer});
             errorPopupTimer -= 2;
             if (errorPopupTimer == 0) {
                 showError = false;

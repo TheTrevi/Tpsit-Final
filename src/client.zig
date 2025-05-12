@@ -238,13 +238,14 @@ pub const client = struct {
         self.shared.mutex.unlock();
     }
 
-    pub fn sendMessage(self: *Self, message_type: u8, content: []const u8) !void {
+    pub fn sendMessage(self: *client, code: u8, message: []const u8) !void {
         if (stream == null) return error.NotConnected;
 
-        const writer = stream.?.writer();
-        const message = try std.fmt.allocPrint(self.alloc, "/{c}{s}\n", .{ message_type, content });
-        defer self.alloc.free(message);
-        self.logger.debug("sending: {s}", .{message}, @src());
-        _ = try writer.writeAll(message);
+        // Format message as expected by server: /[code][message]\n
+        const packet = try std.fmt.allocPrint(self.alloc, "/{c}{s}\n", .{ code, message });
+        defer self.alloc.free(packet);
+
+        try stream.?.writer().writeAll(packet);
+        self.logger.debug("Sent message: {s}", .{packet}, @src());
     }
 };
