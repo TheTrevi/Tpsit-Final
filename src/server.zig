@@ -117,25 +117,11 @@ pub const serverClass = struct {
         const quizData = currentQuiz.*.?.value;
         self.logger.info("Loading test: {s} with {d} questions", .{ quizData.id, quizData.domande.len }, @src());
 
-        // Notify client that test is starting
-
-        // Wait for client to acknowledge
-
-        // Present each question
         var string = std.ArrayList(u8).init(alloc);
         defer string.deinit();
 
         var correctAnswers: usize = 0;
         const totalQuestions = quizData.domande.len;
-
-        //const startMsg = try std.fmt.allocPrint(alloc, "/T{d}", .{totalQuestions});
-        //defer alloc.free(startMsg);
-        //try connWriter.writeAll(startMsg);
-
-        //self.logger.debug("waiting ack, {s}", .{startMsg}, @src());
-        //_ = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024);
-
-        //self.logger.debug("ack OK", .{}, @src());
 
         for (quizData.domande, 0..) |structDomanda, questionIdx| {
             string.clearRetainingCapacity();
@@ -153,16 +139,10 @@ pub const serverClass = struct {
 
             self.logger.debug("Answer for Q{d}: {s}", .{ questionIdx + 1, answer }, @src());
 
-            if (answer.len > 0) {
+            // Check if the answer matches the correct answer text from the quiz
+            if (answer.len > 0 and std.mem.eql(u8, answer, structDomanda.risposte[structDomanda.correct_answer])) {
                 correctAnswers += 1;
             }
-
-            // Notify progress
-            //if (questionIdx < totalQuestions - 1) {
-            //    const progressMsg = try std.fmt.allocPrint(alloc, "/nQuestion {d} of {d} completed\n", .{ questionIdx + 1, totalQuestions });
-            //    defer alloc.free(progressMsg);
-            //    try connWriter.writeAll(progressMsg);
-            //}
         }
 
         // Send test completion notification
@@ -179,6 +159,7 @@ pub const serverClass = struct {
         _ = payload;
         try connWriter.writeAll("/1Enter quiz ID:\n");
         self.logger.debug("quiz requested", .{}, @src());
+
         // Get quiz ID
         const quizId = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse return;
         defer alloc.free(quizId);
@@ -193,20 +174,24 @@ pub const serverClass = struct {
             .domande = &[_]util.domanda{},
         };
 
-        // Start interactive quiz creation
-        try connWriter.writeAll("/1How many questions would you like to add?\n");
+        var numQuestions: usize = undefined;
+        while (true) {
+            // Start interactive quiz creation
+            try connWriter.writeAll("/1How many questions would you like to add?\n");
 
-        const numQuestionsStr = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse return;
-        defer alloc.free(numQuestionsStr);
+            const numQuestionsStr = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse return;
+            defer alloc.free(numQuestionsStr);
 
-        const numQuestions = std.fmt.parseInt(usize, numQuestionsStr, 10) catch {
-            try connWriter.writeAll("/3Invalid number format\n");
-            return;
-        };
+            numQuestions = std.fmt.parseInt(usize, numQuestionsStr, 10) catch {
+                try connWriter.writeAll("/3Invalid number format\n");
+                continue;
+            };
 
-        if (numQuestions == 0 or numQuestions > 100) {
-            try connWriter.writeAll("/3Please enter a number between 1 and 100\n");
-            return;
+            if (numQuestions == 0 or numQuestions > 100) {
+                try connWriter.writeAll("/3Please enter a number between 1 and 100\n");
+                continue;
+            }
+            break;
         }
 
         // Allocate questions array
@@ -229,26 +214,31 @@ pub const serverClass = struct {
 
             alloc.free(tempText);
 
-            // Now get options
-            try connWriter.writeAll("/1How many options for this question?\n");
+            var numOptions: usize = undefined;
+            while (true) {
 
-            const numOptionsStr = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse {
-                alloc.free(questionText);
-                return;
-            };
+                // Now get options
+                try connWriter.writeAll("/1How many options for this question?\n");
 
-            const numOptions = std.fmt.parseInt(usize, numOptionsStr, 10) catch {
-                alloc.free(questionText);
+                const numOptionsStr = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse {
+                    alloc.free(questionText);
+                    return;
+                };
+
+                numOptions = std.fmt.parseInt(usize, numOptionsStr, 10) catch {
+                    alloc.free(questionText);
+                    alloc.free(numOptionsStr);
+                    try connWriter.writeAll("/3Invalid number format\n");
+                    continue;
+                };
                 alloc.free(numOptionsStr);
-                try connWriter.writeAll("/3Invalid number format\n");
-                continue;
-            };
-            alloc.free(numOptionsStr);
 
-            if (numOptions < 2 or numOptions > 10) {
-                alloc.free(questionText);
-                try connWriter.writeAll("/3Please enter a number between 2 and 10\n");
-                continue;
+                if (numOptions < 2 or numOptions > 10) {
+                    alloc.free(questionText);
+                    try connWriter.writeAll("/3Please enter a number between 2 and 10\n");
+                    continue;
+                }
+                break;
             }
 
             // Allocate options array
@@ -279,9 +269,36 @@ pub const serverClass = struct {
                 continue;
             }
 
+            // Get correct answer index
+            try connWriter.writeAll("/1Enter the index of the correct answer (1-based):\n");
+            const correctIndexStr = try connReader.readUntilDelimiterOrEofAlloc(alloc, '\n', 1024) orelse {
+                for (options) |option| alloc.free(option);
+                alloc.free(options);
+                alloc.free(questionText);
+                return;
+            };
+            defer alloc.free(correctIndexStr);
+
+            const correctIndex = std.fmt.parseInt(usize, correctIndexStr, 10) catch {
+                for (options) |option| alloc.free(option);
+                alloc.free(options);
+                alloc.free(questionText);
+                try connWriter.writeAll("/3Invalid index format\n");
+                continue;
+            };
+
+            if (correctIndex == 0 or correctIndex > numOptions) {
+                for (options) |option| alloc.free(option);
+                alloc.free(options);
+                alloc.free(questionText);
+                try connWriter.writeAll("/3Incorrect index\n");
+                continue;
+            }
+            self.logger.debug("Risposta corretta: {d}", .{correctIndex}, @src());
             questions[i] = .{
                 .domanda = questionText,
                 .risposte = options,
+                .correct_answer = correctIndex - 1, // Convert to 0-based index
             };
         }
 

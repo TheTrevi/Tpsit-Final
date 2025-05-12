@@ -1,1 +1,1 @@
-{"id":"134","domande":[{"domanda":"Come Stai","risposte":["Bene","male"]},{"domanda":"ok come 2","risposte":["2e123123","2dasdasd"]}]}
+{"id":"1","domande":[{"domanda":"Come sta","risposte":["Bene","Male"], "correct_answer": "1"},{"domanda":"Mi metta un bel voto","risposte":["Ovvio","Palesemente"], "correct_answer": "1"}, {"domanda" : "Non capisco più un cazzo","risposte" : ["Ovvio", "Assolutamente"]}]}

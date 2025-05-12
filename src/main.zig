@@ -463,6 +463,7 @@ fn handleCreateSubmit() void {
         .num_questions => {
             // Parse number of questions
             const num_str = createInputs[0].buffer[0..createInputs[0].buffer_len];
+            log.debug("domande num: {s}", .{num_str}, @src());
             totalQuestions = std.fmt.parseInt(usize, num_str, 10) catch {
                 displayError(@constCast("Invalid number format"));
                 return;

@@ -15,12 +15,11 @@ pub fn ask_user(input: *[]u8, alloc: Allocator) void {
     if (value) |val| input.* = val;
 }
 
-pub const domanda = struct { domanda: [:0]const u8, risposte: []const [:0]const u8 };
+pub const domanda = struct { domanda: [:0]const u8, risposte: []const [:0]const u8, correct_answer: usize = 0 };
 
 pub const QuizQuestion = struct {
     question: [:0]const u8,
     answers: [4][:0]const u8,
-    correct_index: usize,
 };
 
 pub const Config = struct {
